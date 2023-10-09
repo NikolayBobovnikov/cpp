@@ -3,37 +3,52 @@
 #include <mutex>
 #include <queue>
 #include <condition_variable>
-#include <atomic>
 #include <chrono>
 #include <vector>
 #include <memory>
+#include <functional>
 #include <stdexcept>
+#include <atomic>
 
 // Dummy Request class
 class Request
 {
 };
 
+// Forward declaration of Stopper
+class Stopper;
+
 // Dummy GetRequest function
-Request *GetRequest(std::atomic_bool &stopSignal) noexcept
-{
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  return stopSignal ? nullptr : new Request();
-}
+Request *GetRequest(Stopper stopSignal) noexcept;
 
 // Dummy ProcessRequest function
-void ProcessRequest(std::unique_ptr<Request> request, std::atomic_bool &stopSignal) noexcept
-{
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
-}
+void ProcessRequest(Request *request, Stopper stopSignal) noexcept;
 
 class Stopper
 {
 public:
-  std::atomic_bool stopSignal{false};
+  std::shared_ptr<std::atomic_bool> stopSignal;
+
+  Stopper()
+      : stopSignal(std::make_shared<std::atomic_bool>(false)) {}
+
+  Stopper(const Stopper &other)
+      : stopSignal(other.stopSignal) {}
 };
 
-class ThreadPool
+Request *GetRequest(Stopper stopSignal) noexcept
+{
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  return *(stopSignal.stopSignal) ? nullptr : new Request();
+}
+
+void ProcessRequest(Request *request, Stopper stopSignal) noexcept
+{
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+}
+
+template <typename Func>
+class TaskProcessor
 {
 private:
   std::queue<std::unique_ptr<Request>> requestQueue;
@@ -41,11 +56,12 @@ private:
   std::mutex queueMutex;
   std::condition_variable queueCondVar;
   Stopper stopper;
+  Func processFunction;
   size_t threadCount;
 
 public:
-  ThreadPool(size_t initialThreadCount = 2)
-      : threadCount(initialThreadCount)
+  TaskProcessor(Func func, size_t initialThreadCount = 2)
+      : processFunction(func), threadCount(initialThreadCount)
   {
     for (size_t i = 0; i < initialThreadCount; ++i)
     {
@@ -57,12 +73,12 @@ public:
   {
     workerThreads.emplace_back([this]()
                                {
-            while (!stopper.stopSignal) {
+            while (!stopper.stopSignal->load()) {
                 std::unique_ptr<Request> request;
                 {
                     std::unique_lock<std::mutex> lock(queueMutex);
                     queueCondVar.wait(lock, [this]() {
-                        return !requestQueue.empty() || stopper.stopSignal;
+                        return !requestQueue.empty() || stopper.stopSignal->load();
                     });
 
                     if (!requestQueue.empty()) {
@@ -73,16 +89,15 @@ public:
 
                 if (request) {
                     try {
-                        ProcessRequest(std::move(request), stopper.stopSignal);
+                        processFunction(request.get(), stopper);
                     } catch (const std::exception& e) {
-                        // Handle exceptions from ProcessRequest
                         std::cerr << "Exception: " << e.what() << std::endl;
                     }
                 }
             } });
   }
 
-  void receive(Request *rawRequest) noexcept
+  void runTask(Request *rawRequest) noexcept
   {
     try
     {
@@ -93,7 +108,6 @@ public:
     }
     catch (const std::exception &e)
     {
-      // Handle exceptions, if any
       std::cerr << "Exception: " << e.what() << std::endl;
     }
   }
@@ -109,7 +123,7 @@ public:
 
   void stop()
   {
-    stopper.stopSignal = true;
+    stopper.stopSignal->store(true);
     queueCondVar.notify_all();
 
     for (auto &worker : workerThreads)
@@ -121,7 +135,7 @@ public:
     }
   }
 
-  ~ThreadPool()
+  ~TaskProcessor()
   {
     stop();
   }
@@ -129,33 +143,31 @@ public:
 
 int main()
 {
-  ThreadPool pool;
+  Stopper globalStopper;
+  TaskProcessor<decltype(ProcessRequest) *> processor(ProcessRequest);
 
-  // Run for 30 seconds
   auto start = std::chrono::high_resolution_clock::now();
   auto now = start;
-  Stopper stopper;
 
   while (std::chrono::duration_cast<std::chrono::seconds>(now - start).count() < 30)
   {
     try
     {
-      Request *req = GetRequest(stopper.stopSignal);
+      Request *req = GetRequest(globalStopper);
       if (req)
       {
-        pool.receive(req);
+        processor.runTask(req);
       }
     }
     catch (const std::exception &e)
     {
-      // Handle exceptions from GetRequest
       std::cerr << "Exception: " << e.what() << std::endl;
     }
     now = std::chrono::high_resolution_clock::now();
   }
 
-  stopper.stopSignal = true;
-  pool.stop();
+  globalStopper.stopSignal->store(true);
+  processor.stop();
 
   return 0;
 }
