@@ -105,19 +105,11 @@ class ProcessRequestFunc
   FuncType m_func;
 };
 
-class TaskProcessor
+class RequestProcessor
 {
- private:
-  std::queue<std::unique_ptr<Request>> m_requests;
-  std::vector<std::thread> m_threads;
-  std::mutex m_mtx;
-  std::condition_variable m_cv;
-  Stopper m_stopper;
-  ProcessRequestFunc m_processFunction;
-  size_t m_threadsCount;
-
  public:
-  explicit TaskProcessor(ProcessRequestFunc func, size_t initialThreadCount = 2)
+  explicit RequestProcessor(ProcessRequestFunc func,
+                            size_t initialThreadCount = 2)
       : m_processFunction(func)
       , m_threadsCount(initialThreadCount)
   {
@@ -125,12 +117,46 @@ class TaskProcessor
       spawnThread();
     }
   }
+  ~RequestProcessor() { stop(); }
 
-  TaskProcessor(const TaskProcessor &) = delete;
-  TaskProcessor &operator=(const TaskProcessor &) = delete;
-  TaskProcessor(TaskProcessor &&) = delete;
-  TaskProcessor &operator=(const TaskProcessor &&) = delete;
+  RequestProcessor(const RequestProcessor &) = delete;
+  RequestProcessor &operator=(const RequestProcessor &) = delete;
+  RequestProcessor(RequestProcessor &&) = delete;
+  RequestProcessor &operator=(const RequestProcessor &&) = delete;
 
+  void process(Request *rawRequest) noexcept
+  {
+    try {
+      std::unique_ptr<Request> request(rawRequest);
+      std::unique_lock<std::mutex> lock(m_mtx);
+      m_requests.push(std::move(request));
+      m_cv.notify_one();
+    } catch(const std::exception &e) {
+      std::cerr << "Exception: " << e.what() << std::endl;
+    }
+  }
+
+  void addThreads(size_t additionalThreads)
+  {
+    for(size_t i = 0; i < additionalThreads; ++i) {
+      spawnThread();
+    }
+    m_threadsCount += additionalThreads;
+  }
+
+  void stop()
+  {
+    m_stopper.stopSignal->store(true);
+    m_cv.notify_all();
+
+    for(auto &worker : m_threads) {
+      if(worker.joinable()) {
+        worker.join();
+      }
+    }
+  }
+
+ private:
   void spawnThread()
   {
     m_threads.emplace_back([this]() {
@@ -159,45 +185,19 @@ class TaskProcessor
     });
   }
 
-  void runTask(Request *rawRequest) noexcept
-  {
-    try {
-      std::unique_ptr<Request> request(rawRequest);
-      std::unique_lock<std::mutex> lock(m_mtx);
-      m_requests.push(std::move(request));
-      m_cv.notify_one();
-    } catch(const std::exception &e) {
-      std::cerr << "Exception: " << e.what() << std::endl;
-    }
-  }
-
-  void increaseThreadCount(size_t additionalThreads)
-  {
-    for(size_t i = 0; i < additionalThreads; ++i) {
-      spawnThread();
-    }
-    m_threadsCount += additionalThreads;
-  }
-
-  void stop()
-  {
-    m_stopper.stopSignal->store(true);
-    m_cv.notify_all();
-
-    for(auto &worker : m_threads) {
-      if(worker.joinable()) {
-        worker.join();
-      }
-    }
-  }
-
-  ~TaskProcessor() { stop(); }
+  std::queue<std::unique_ptr<Request>> m_requests;
+  std::vector<std::thread> m_threads;
+  std::mutex m_mtx;
+  std::condition_variable m_cv;
+  Stopper m_stopper;
+  ProcessRequestFunc m_processFunction;
+  size_t m_threadsCount;
 };
 
 int main()
 {
   Stopper globalStopper;
-  TaskProcessor processor(ProcessRequest);
+  RequestProcessor processor(ProcessRequest);
 
   auto start = std::chrono::high_resolution_clock::now();
   auto now = start;
@@ -208,7 +208,7 @@ int main()
     try {
       Request *req = GetRequest(globalStopper);
       if(nullptr != req) {
-        processor.runTask(req);
+        processor.process(req);
       }
     } catch(const std::exception &e) {
       std::cerr << "Exception: " << e.what() << std::endl;
