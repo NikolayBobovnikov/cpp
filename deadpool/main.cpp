@@ -20,9 +20,11 @@ class Request
 class Stopper;
 
 // Dummy GetRequest function
+// NOLINTNEXTLINE (readability-identifier-naming)
 Request *GetRequest(Stopper stopSignal) noexcept;
 
 // Dummy ProcessRequest function
+// NOLINTNEXTLINE (readability-identifier-naming)
 void ProcessRequest(Request *request, Stopper stopSignal) noexcept;
 
 class Stopper
@@ -34,41 +36,44 @@ class Stopper
       : stopSignal(std::make_shared<std::atomic_bool>(false))
   {
   }
-
-  Stopper(const Stopper &other)
-      : stopSignal(other.stopSignal)
-  {
-  }
 };
 
+// NOLINTNEXTLINE (readability-identifier-naming)
 Request *GetRequest(Stopper stopSignal) noexcept
 {
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  constexpr auto delay = 100;
+  std::this_thread::sleep_for(std::chrono::milliseconds(delay));
   return *(stopSignal.stopSignal) ? nullptr : new Request();
 }
 
+// NOLINTNEXTLINE (readability-identifier-naming)
 void ProcessRequest(Request *request, Stopper stopSignal) noexcept
 {
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  constexpr auto delay = 200;
+  std::this_thread::sleep_for(std::chrono::milliseconds(delay));
 }
 
-// Corrected function_traits definition, include the case for noexcept functions
+// Corrected FunctionTraits definition, include the case for noexcept functions
 template <typename T>
-struct function_traits;
+struct FunctionTraits;
 
-template <typename R, typename... Args>
-struct function_traits<R (*)(Args...) noexcept> {
-  using return_type = R;
+template <typename ReturnType, typename... Args>
+struct FunctionTraits<ReturnType (*)(Args...) noexcept> {
+  // NOLINTNEXTLINE (readability-identifier-naming)
+  using return_type = ReturnType;
+  // NOLINTNEXTLINE (readability-identifier-naming)
   using args_tuple = std::tuple<Args...>;
 };
 
-template <typename R, typename... Args>
-struct function_traits<R (*)(Args...)> {
-  using return_type = R;
+template <typename ReturnType, typename... Args>
+struct FunctionTraits<ReturnType (*)(Args...)> {
+  // NOLINTNEXTLINE (readability-identifier-naming)
+  using return_type = ReturnType;
+  // NOLINTNEXTLINE (readability-identifier-naming)
   using args_tuple = std::tuple<Args...>;
 };
 
-// Correct the static_asserts to properly refer to the function_traits
+// Correct the static_asserts to properly refer to the FunctionTraits
 class ProcessRequestFunc
 {
  public:
@@ -77,7 +82,7 @@ class ProcessRequestFunc
   ProcessRequestFunc(FuncType func)
       : m_func(func)
   {
-    using Traits = function_traits<FuncType>;
+    using Traits = FunctionTraits<FuncType>;
     static_assert(std::is_same_v<typename Traits::return_type, void>,
                   "Return type must be void");
     static_assert(
@@ -93,7 +98,7 @@ class ProcessRequestFunc
   // Remaining code is the same
   void operator()(Request *req, Stopper stopper) const noexcept
   {
-    m_func(req, stopper);
+    m_func(req, std::move(stopper));
   }
 
  private:
@@ -103,44 +108,49 @@ class ProcessRequestFunc
 class TaskProcessor
 {
  private:
-  std::queue<std::unique_ptr<Request>> requestQueue;
-  std::vector<std::thread> workerThreads;
-  std::mutex queueMutex;
-  std::condition_variable queueCondVar;
-  Stopper stopper;
-  ProcessRequestFunc processFunction;
-  size_t threadCount;
+  std::queue<std::unique_ptr<Request>> m_requests;
+  std::vector<std::thread> m_threads;
+  std::mutex m_mtx;
+  std::condition_variable m_cv;
+  Stopper m_stopper;
+  ProcessRequestFunc m_processFunction;
+  size_t m_threadsCount;
 
  public:
-  TaskProcessor(ProcessRequestFunc func, size_t initialThreadCount = 2)
-      : processFunction(func)
-      , threadCount(initialThreadCount)
+  explicit TaskProcessor(ProcessRequestFunc func, size_t initialThreadCount = 2)
+      : m_processFunction(func)
+      , m_threadsCount(initialThreadCount)
   {
     for(size_t i = 0; i < initialThreadCount; ++i) {
       spawnThread();
     }
   }
 
+  TaskProcessor(const TaskProcessor &) = delete;
+  TaskProcessor &operator=(const TaskProcessor &) = delete;
+  TaskProcessor(TaskProcessor &&) = delete;
+  TaskProcessor &operator=(const TaskProcessor &&) = delete;
+
   void spawnThread()
   {
-    workerThreads.emplace_back([this]() {
-      while(!stopper.stopSignal->load()) {
+    m_threads.emplace_back([this]() {
+      while(!m_stopper.stopSignal->load()) {
         std::unique_ptr<Request> request;
         {
-          std::unique_lock<std::mutex> lock(queueMutex);
-          queueCondVar.wait(lock, [this]() {
-            return !requestQueue.empty() || stopper.stopSignal->load();
+          std::unique_lock<std::mutex> lock(m_mtx);
+          m_cv.wait(lock, [this]() {
+            return !m_requests.empty() || m_stopper.stopSignal->load();
           });
 
-          if(!requestQueue.empty()) {
-            request = std::move(requestQueue.front());
-            requestQueue.pop();
+          if(!m_requests.empty()) {
+            request = std::move(m_requests.front());
+            m_requests.pop();
           }
         }
 
         if(request) {
           try {
-            processFunction(request.get(), stopper);
+            m_processFunction(request.get(), m_stopper);
           } catch(const std::exception &e) {
             std::cerr << "Exception: " << e.what() << std::endl;
           }
@@ -153,9 +163,9 @@ class TaskProcessor
   {
     try {
       std::unique_ptr<Request> request(rawRequest);
-      std::unique_lock<std::mutex> lock(queueMutex);
-      requestQueue.push(std::move(request));
-      queueCondVar.notify_one();
+      std::unique_lock<std::mutex> lock(m_mtx);
+      m_requests.push(std::move(request));
+      m_cv.notify_one();
     } catch(const std::exception &e) {
       std::cerr << "Exception: " << e.what() << std::endl;
     }
@@ -166,15 +176,15 @@ class TaskProcessor
     for(size_t i = 0; i < additionalThreads; ++i) {
       spawnThread();
     }
-    threadCount += additionalThreads;
+    m_threadsCount += additionalThreads;
   }
 
   void stop()
   {
-    stopper.stopSignal->store(true);
-    queueCondVar.notify_all();
+    m_stopper.stopSignal->store(true);
+    m_cv.notify_all();
 
-    for(auto &worker : workerThreads) {
+    for(auto &worker : m_threads) {
       if(worker.joinable()) {
         worker.join();
       }
@@ -191,12 +201,13 @@ int main()
 
   auto start = std::chrono::high_resolution_clock::now();
   auto now = start;
+  constexpr auto delay = 30;
 
   while(std::chrono::duration_cast<std::chrono::seconds>(now - start).count() <
-        30) {
+        delay) {
     try {
       Request *req = GetRequest(globalStopper);
-      if(req) {
+      if(nullptr != req) {
         processor.runTask(req);
       }
     } catch(const std::exception &e) {

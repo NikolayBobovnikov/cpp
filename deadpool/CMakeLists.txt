@@ -5,3 +5,12 @@ set(CMAKE_CXX_STANDARD 17)
 add_executable(taskprocessor main.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(taskprocessor PRIVATE Threads::Threads)
+
+# Enable clang-tidy checks
+find_program(CLANG_TIDY_BIN NAMES "clang-tidy" PATHS "/usr/bin" "/usr/local/bin")
+if(CLANG_TIDY_BIN)
+    message(STATUS "Found clang-tidy: ${CLANG_TIDY_BIN}")
+    set_target_properties(taskprocessor PROPERTIES CXX_CLANG_TIDY "${CLANG_TIDY_BIN}")
+else()
+    message(WARNING "clang-tidy not found.")
+endif()
