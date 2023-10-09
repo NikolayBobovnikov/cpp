@@ -9,6 +9,7 @@
 #include <functional>
 #include <stdexcept>
 #include <atomic>
+#include <type_traits>
 
 // Dummy Request class
 class Request
@@ -47,7 +48,48 @@ void ProcessRequest(Request *request, Stopper stopSignal) noexcept
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 }
 
-template <typename Func>
+// Corrected function_traits definition, include the case for noexcept functions
+template <typename T>
+struct function_traits;
+
+template <typename R, typename... Args>
+struct function_traits<R (*)(Args...) noexcept>
+{
+  using return_type = R;
+  using args_tuple = std::tuple<Args...>;
+};
+
+template <typename R, typename... Args>
+struct function_traits<R (*)(Args...)>
+{
+  using return_type = R;
+  using args_tuple = std::tuple<Args...>;
+};
+
+// Correct the static_asserts to properly refer to the function_traits
+class ProcessRequestFunc
+{
+public:
+  using FuncType = decltype(&ProcessRequest);
+
+  ProcessRequestFunc(FuncType func) : m_func(func)
+  {
+    using Traits = function_traits<FuncType>;
+    static_assert(std::is_same_v<typename Traits::return_type, void>, "Return type must be void");
+    static_assert(std::is_same_v<std::tuple_element_t<0, typename Traits::args_tuple>, Request *>, "First argument must be Request*");
+    static_assert(std::is_same_v<std::tuple_element_t<1, typename Traits::args_tuple>, Stopper>, "Second argument must be Stopper");
+  }
+
+  // Remaining code is the same
+  void operator()(Request *req, Stopper stopper) const noexcept
+  {
+    m_func(req, stopper);
+  }
+
+private:
+  FuncType m_func;
+};
+
 class TaskProcessor
 {
 private:
@@ -56,11 +98,11 @@ private:
   std::mutex queueMutex;
   std::condition_variable queueCondVar;
   Stopper stopper;
-  Func processFunction;
+  ProcessRequestFunc processFunction;
   size_t threadCount;
 
 public:
-  TaskProcessor(Func func, size_t initialThreadCount = 2)
+  TaskProcessor(ProcessRequestFunc func, size_t initialThreadCount = 2)
       : processFunction(func), threadCount(initialThreadCount)
   {
     for (size_t i = 0; i < initialThreadCount; ++i)
@@ -144,7 +186,7 @@ public:
 int main()
 {
   Stopper globalStopper;
-  TaskProcessor<decltype(ProcessRequest) *> processor(ProcessRequest);
+  TaskProcessor processor(ProcessRequest);
 
   auto start = std::chrono::high_resolution_clock::now();
   auto now = start;
