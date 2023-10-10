@@ -2,7 +2,13 @@ cmake_minimum_required(VERSION 3.10)
 
 project(TaskProcessor)
 set(CMAKE_CXX_STANDARD 17)
-add_executable(taskprocessor main.cpp)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+add_executable(taskprocessor 
+  external_api.cpp 
+  process_request_func.cpp 
+  request_processor.cpp 
+  stopper.cpp 
+  main.cpp )
 find_package(Threads REQUIRED)
 target_link_libraries(taskprocessor PRIVATE Threads::Threads)
 
