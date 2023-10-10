@@ -4,7 +4,7 @@
 #include <external_api.h>
 
 // NOLINTNEXTLINE (readability-identifier-naming)
-Request *GetRequest(Stopper stopSignal) noexcept
+Request *GetRequest(Stopper stopSignal) throw()
 {
   constexpr auto delay = 100;
   std::this_thread::sleep_for(std::chrono::milliseconds(delay));
@@ -12,7 +12,7 @@ Request *GetRequest(Stopper stopSignal) noexcept
 }
 
 // NOLINTNEXTLINE (readability-identifier-naming)
-void ProcessRequest(Request *request, Stopper stopSignal) noexcept
+void ProcessRequest(Request *request, Stopper stopSignal) throw()
 {
   constexpr auto delay = 200;
   std::this_thread::sleep_for(std::chrono::milliseconds(delay));
